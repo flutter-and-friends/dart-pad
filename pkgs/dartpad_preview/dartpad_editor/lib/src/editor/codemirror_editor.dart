@@ -37,7 +37,8 @@ final class CodeMirrorEditor {
   /// - [onUpdate] is triggered when the document text changes.
   /// - [onSave] is triggered on Cmd/Ctrl+S keypress.
   /// - [onCodeActionRequested] is triggered on Cmd/Ctrl+. keypress.
-  /// - [onFixDiagnostic] is triggered when applying diagnostic fixes.
+  /// - [onQuickFixRequested] is triggered from a diagnostic hover action.
+  /// - [onQuickFixAvailabilityRequested] controls whether that action is shown.
   factory CodeMirrorEditor(
     web.HTMLElement element, {
     required String file,
@@ -45,7 +46,8 @@ final class CodeMirrorEditor {
     void Function(String text)? onUpdate,
     void Function()? onSave,
     void Function()? onCodeActionRequested,
-    void Function(int from, int to, String message)? onFixDiagnostic,
+    void Function(int from, int to)? onQuickFixRequested,
+    Future<bool> Function(int from, int to)? onQuickFixAvailabilityRequested,
     LanguageServerClient? languageServerClient,
   }) {
     final langCompartment = cm.Compartment();
@@ -103,17 +105,18 @@ final class CodeMirrorEditor {
                 ),
               ].toJS,
             ),
-          if (onFixDiagnostic != null)
+          if (onQuickFixRequested != null)
             cm.diagnosticHoverToolbar(
               [
                 cm.ToolbarAction(
-                  label: 'Fix with Agent'.toJS,
-                  run: ((cm.EditorView view, int from, int to, JSArray<JSObject> diagnostics) {
-                    final list = diagnostics.toDart;
-                    if (list.isNotEmpty) {
-                      final diag = cm.CMDiagnostic(list.first);
-                      onFixDiagnostic(from, to, diag.message.toDart);
-                    }
+                  label: 'Apply fix'.toJS,
+                  isAvailable: onQuickFixAvailabilityRequested == null
+                      ? null
+                      : ((cm.EditorView view, int from, int to, JSArray<JSObject> _) {
+                          return onQuickFixAvailabilityRequested(from, to).then((available) => available.toJS).toJS;
+                        }).toJS,
+                  run: ((cm.EditorView view, int from, int to, JSArray<JSObject> _) {
+                    onQuickFixRequested(from, to);
                   }).toJS,
                 ),
               ].toJS,

@@ -67,7 +67,7 @@ external JSAny gotoDefinitionOnClick();
 external JSAny lintGutter();
 
 @JS()
-external JSAny linter(JSFunction? source);
+external JSAny linter(JSFunction? source, [JSObject? config]);
 
 @JS()
 external JSAny diagnosticHoverToolbar(JSArray<ToolbarAction> actions);
@@ -79,6 +79,7 @@ extension type ToolbarAction._(JSObject _) implements JSObject {
   external factory ToolbarAction({
     JSString label,
     JSFunction run,
+    JSFunction? isAvailable,
   });
 }
 
