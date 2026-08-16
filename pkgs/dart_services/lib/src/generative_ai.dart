@@ -3,10 +3,11 @@
 // BSD-style license that can be found in the LICENSE file.
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' as io;
 
 import 'package:dartpad_shared/model.dart';
-import 'package:google_cloud_ai_generativelanguage_v1beta/generativelanguage.dart';
-import 'package:google_cloud_rpc/exceptions.dart';
+import 'package:http/http.dart' as http;
 
 import 'logging.dart';
 import 'project_templates.dart';
@@ -14,69 +15,230 @@ import 'pub.dart';
 
 final DartPadLogger _logger = DartPadLogger('gen-ai');
 
-class GenerativeAI {
-  // Valid values are from https://ai.google.dev/gemini-api/docs/models.
-  static const String _geminiModel = 'models/gemini-3.1-flash-lite';
-  static const String _apiKeyVarName = 'GEMINI_API_KEY';
+/// Exception thrown when a generation request cannot be served.
+class GenerationException implements Exception {
+  GenerationException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
 
-  GenerativeService? gemini;
+/// A minimal OpenAI-compatible streaming chat-completions client.
+///
+/// This replaces the Gemini (`google_cloud_ai_generativelanguage_v1beta`)
+/// client. It talks to any OpenAI-compatible `/v1/chat/completions` endpoint
+/// (Berget AI in this deployment) and yields incremental content strings.
+class _OpenAiChatClient {
+  _OpenAiChatClient({required this.model, required this.apiUrl});
 
-  GenerativeAI() {
+  final String model;
+  final String apiUrl;
+
+  /// Stream the assistant's content for a single-turn chat.
+  ///
+  /// Parses the SSE (`data: {...}`) stream and yields each
+  /// `choices[0].delta.content` payload, stopping at `data: [DONE]`.
+  Stream<String> chatStream({
+    required String system,
+    required String user,
+  }) async* {
+    final token = await _BergetAuth.token(apiUrl);
+    final request = http.Request('POST', Uri.parse('$apiUrl/v1/chat/completions'))
+      ..headers['Authorization'] = 'Bearer $token'
+      ..headers['Content-Type'] = 'application/json'
+      ..body = jsonEncode({
+        'model': model,
+        'stream': true,
+        'messages': [
+          {'role': 'system', 'content': system},
+          {'role': 'user', 'content': user},
+        ],
+      });
+
+    final http.StreamedResponse response;
     try {
-      gemini = GenerativeService.fromApiKey();
+      response = await request.send().timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      throw GenerationException('Generation backend timed out connecting.');
+    }
 
-      _logger.info('$_apiKeyVarName set; gen-ai features ENABLED');
-    } on ConfigurationException {
-      _logger.warning('$_apiKeyVarName not set; gen-ai features DISABLED');
+    if (response.statusCode != 200) {
+      final body = await response.stream.bytesToString();
+      throw GenerationException(
+        'Generation backend returned HTTP ${response.statusCode}: $body',
+      );
+    }
+
+    // Parse SSE lines. Lines may be split across chunk boundaries, so buffer
+    // and only process complete lines.
+    final buffer = StringBuffer();
+    await for (final chunk in response.stream.transform(utf8.decoder)) {
+      buffer.write(chunk);
+      var text = buffer.toString();
+      var newlineIndex = text.indexOf('\n');
+      while (newlineIndex != -1) {
+        final line = text.substring(0, newlineIndex);
+        text = text.substring(newlineIndex + 1);
+        newlineIndex = text.indexOf('\n');
+
+        final content = _parseSseLine(line);
+        if (content != null) yield content;
+      }
+      buffer
+        ..clear()
+        ..write(text);
+    }
+    // Flush any trailing partial line.
+    final trailing = _parseSseLine(buffer.toString());
+    if (trailing != null) yield trailing;
+  }
+
+  /// Returns the `delta.content` of one SSE `data:` line, or null for
+  /// comments, keep-alives, `[DONE]`, and chunks without content.
+  static String? _parseSseLine(String line) {
+    final trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) return null;
+    final payload = trimmed.substring(5).trim();
+    if (payload == '[DONE]') return null;
+    try {
+      final json = jsonDecode(payload) as Map<String, dynamic>;
+      final choices = json['choices'] as List?;
+      final first = choices == null || choices.isEmpty
+          ? null
+          : choices.first as Map<String, dynamic>?;
+      final delta = first?['delta'] as Map<String, dynamic>?;
+      final content = delta?['content'];
+      return content is String && content.isNotEmpty ? content : null;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Caches and refreshes Berget OAuth access tokens.
+///
+/// A long-lived refresh token is exchanged for a short-lived access token via
+/// `POST /v1/auth/refresh`. The access token is cached and proactively
+/// refreshed at 80% of its TTL, so a token never expires mid-stream.
+class _BergetAuth {
+  _BergetAuth._();
+
+  static String? _cachedToken;
+  static int _expiresAtMs = 0;
+  static Future<String>? _inFlight;
+
+  /// Returns a valid access token, refreshing if expired or near expiry.
+  static Future<String> token(String apiUrl) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_cachedToken != null && now < _expiresAtMs) {
+      return Future.value(_cachedToken);
+    }
+    return _inFlight ??= _refresh(apiUrl).whenComplete(() => _inFlight = null);
+  }
+
+  static Future<String> _refresh(String apiUrl) async {
+    final refresh = io.Platform.environment['BERGET_REFRESH_TOKEN'] ?? '';
+    if (refresh.isEmpty) {
+      throw GenerationException('BERGET_REFRESH_TOKEN not set');
+    }
+
+    final response = await http
+        .post(
+          Uri.parse('$apiUrl/v1/auth/refresh'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'refresh_token': refresh}),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      throw GenerationException(
+        'Berget token refresh failed: HTTP ${response.statusCode} ${response.body}',
+      );
+    }
+
+    final json = jsonDecode(response.body) as Map<String, dynamic>;
+    final token = json['token'] as String?;
+    final expiresIn = json['expires_in'] as int?; // seconds
+    if (token == null) {
+      throw GenerationException('Berget refresh returned no token.');
+    }
+
+    // Cache until 80% of TTL (default 900s → refresh after 720s).
+    final ttlMs = ((expiresIn ?? 900) * 0.8 * 1000).round();
+    _cachedToken = token;
+    _expiresAtMs = DateTime.now().millisecondsSinceEpoch + ttlMs;
+    return token;
+  }
+}
+
+class GenerativeAI {
+  GenerativeAI() {
+    final refreshToken = io.Platform.environment['BERGET_REFRESH_TOKEN'];
+    if (refreshToken != null && refreshToken.isNotEmpty) {
+      _client = _OpenAiChatClient(model: _model, apiUrl: _apiUrl);
+      _logger.info(
+        'BERGET_REFRESH_TOKEN set; gen-ai features ENABLED '
+        '(backend: $_apiUrl, model: $_model)',
+      );
+    } else {
+      _logger.warning('BERGET_REFRESH_TOKEN not set; gen-ai features DISABLED');
     }
   }
 
-  bool get _canGenAI => gemini != null;
+  _OpenAiChatClient? _client;
 
-  final Part _flutterFixInstructions = Part(
-    text: '''
+  static String get _model {
+    final value = io.Platform.environment['BERGET_MODEL'];
+    return (value == null || value.isEmpty)
+        ? 'google/gemma-4-31B-it'
+        : value;
+  }
+
+  static String get _apiUrl {
+    final value = io.Platform.environment['BERGET_API_URL'];
+    return (value == null || value.isEmpty) ? 'https://api.berget.ai' : value;
+  }
+
+  bool get _canGenAI => _client != null;
+
+  static const String _flutterFixInstructions = '''
 You will be given an error message in provided Flutter source code along with an
 optional line and column number where the error appears. Please fix the code and
 return it in it's entirety. The response should be the same program as the input
 with the error fixed.
-''',
-  );
+''';
 
-  final Part _dartFixInstructions = Part(
-    text: '''
+  static const String _dartFixInstructions = '''
 You will be given an error message in provided Dart source code along with an
 optional line and column number where the error appears. Please fix the code and
 return it in it's entirety. The response should be the same program as the input
 with the error fixed.
-''',
-  );
+''';
 
-  final Part _newFlutterCodeInstructions = Part(
-    text: '''
+  static const String _newFlutterCodeInstructions = '''
 Generate a Flutter program that satisfies the provided description.
-''',
-  );
+''';
 
-  final Part _newDartCodeInstructions = Part(
-    text: '''
+  static const String _newDartCodeInstructions = '''
 Generate a Dart program that satisfies the provided description.
-''',
-  );
+''';
 
-  late final Part _updateFlutterCodeInstructions = Part(
-    text: _systemInstructions(AppType.flutter, '''
+  late final String _updateFlutterCodeInstructions = _systemInstructions(
+    AppType.flutter,
+    '''
 You will be given an existing Flutter program and a description of a change to
 be made to it. Generate an updated Flutter program that satisfies the
 description.
-'''),
+''',
   );
 
-  late final Part _updateDartCodeInstructions = Part(
-    text: _systemInstructions(AppType.dart, '''
+  late final String _updateDartCodeInstructions = _systemInstructions(
+    AppType.dart,
+    '''
 You will be given an existing Dart program and a description of a change to
 be made to it. Generate an updated Dart program that satisfies the
 description.
-'''),
+''',
   );
 
   Stream<String> suggestFix({
@@ -88,29 +250,20 @@ description.
   }) async* {
     _checkCanAI();
 
-    final systemInstructions = appType == AppType.dart
-        ? _dartFixInstructions
-        : _flutterFixInstructions;
+    final systemInstructions =
+        appType == AppType.dart ? _dartFixInstructions : _flutterFixInstructions;
 
-    final prompt =
-        '''
+    final prompt = '''
 ERROR MESSAGE: $message
 ${line != null ? 'LINE: $line\n' : ''}
 ${column != null ? 'COLUMN: $column\n' : ''}
 SOURCE CODE:
 $source
 ''';
-    final content = Content(parts: [Part(text: prompt)]);
 
-    final stream = gemini!.streamGenerateContent(
-      GenerateContentRequest(
-        model: _geminiModel,
-        systemInstruction: Content(parts: [systemInstructions]),
-        contents: [content],
-      ),
+    yield* cleanCode(
+      _client!.chatStream(system: systemInstructions, user: prompt),
     );
-
-    yield* cleanCode(_textOnly(stream));
   }
 
   Stream<String> generateCode({
@@ -119,31 +272,15 @@ $source
     required List<Attachment> attachments,
   }) async* {
     _checkCanAI();
+    _rejectAttachments(attachments);
 
     final systemInstructions = appType == AppType.dart
         ? _newDartCodeInstructions
         : _newFlutterCodeInstructions;
 
-    final content = Content(
-      parts: [
-        Part(text: prompt),
-        ...attachments.map(
-          (a) => Part(
-            inlineData: Blob(mimeType: a.mimeType, data: a.bytes),
-          ),
-        ),
-      ],
+    yield* cleanCode(
+      _client!.chatStream(system: systemInstructions, user: prompt),
     );
-
-    final stream = gemini!.streamGenerateContent(
-      GenerateContentRequest(
-        model: _geminiModel,
-        systemInstruction: Content(parts: [systemInstructions]),
-        contents: [content],
-      ),
-    );
-
-    yield* cleanCode(_textOnly(stream));
   }
 
   Stream<String> updateCode({
@@ -153,13 +290,13 @@ $source
     required List<Attachment> attachments,
   }) async* {
     _checkCanAI();
+    _rejectAttachments(attachments);
 
     final systemInstructions = appType == AppType.dart
         ? _updateDartCodeInstructions
         : _updateFlutterCodeInstructions;
 
-    final completePrompt =
-        '''
+    final completePrompt = '''
 EXISTING SOURCE CODE:
 $source
 
@@ -167,39 +304,23 @@ CHANGE DESCRIPTION:
 $prompt
 ''';
 
-    final content = Content(
-      parts: [
-        Part(text: completePrompt),
-        ...attachments.map(
-          (a) => Part(
-            inlineData: Blob(mimeType: a.mimeType, data: a.bytes),
-          ),
-        ),
-      ],
+    yield* cleanCode(
+      _client!.chatStream(system: systemInstructions, user: completePrompt),
     );
-
-    final stream = gemini!.streamGenerateContent(
-      GenerateContentRequest(
-        model: _geminiModel,
-        systemInstruction: Content(parts: [systemInstructions]),
-        contents: [content],
-      ),
-    );
-
-    yield* cleanCode(_textOnly(stream));
   }
 
   void _checkCanAI() {
     if (!_canGenAI) {
-      throw Exception('Gemini API key not set');
+      throw GenerationException('BERGET_REFRESH_TOKEN not set');
     }
   }
 
-  static Stream<String> _textOnly(Stream<GenerateContentResponse> stream) {
-    return stream.map((response) {
-      final parts = response.candidates.firstOrNull?.content?.parts ?? [];
-      return parts.where((part) => part.text != null).map((p) => p.text).join();
-    });
+  void _rejectAttachments(List<Attachment> attachments) {
+    if (attachments.isNotEmpty) {
+      throw GenerationException(
+        'Attachments are not supported by this generation backend.',
+      );
+    }
   }
 
   static const startCodeBlock = '```dart\n';
@@ -212,8 +333,9 @@ $prompt
   /// the code block, text is yielded until the closing "```" is encountered,
   /// at which point any remaining text is ignored.
   ///
-  /// This parser works in a streaming manner and does not assume that the start
-  /// or end markers are contained entirely in one chunk.
+  /// Fallback: if the stream ends without ever seeing a start marker (some
+  /// models omit the fence despite instruction), the raw buffer is yielded so
+  /// the caller still receives code rather than an empty stream.
   static Stream<String> cleanCode(Stream<String> input) async* {
     const startMarker = '```dart\n';
     const endMarker = '```';
@@ -230,30 +352,25 @@ $prompt
         final startIndex = str.indexOf(startMarker);
         if (startIndex == -1) continue;
 
-        // Reset buffer to contain only content after the start marker
-        // This handles cases where the marker is split across chunks
         buffer.clear();
         buffer.write(str.substring(startIndex + startMarker.length));
         foundStart = true;
       }
 
-      assert(foundStart);
-      assert(!foundEnd);
-
       final str = buffer.toString();
       final endIndex = str.indexOf(endMarker);
       foundEnd = endIndex != -1;
 
-      // Only extract up to the end marker if found, otherwise yield the entire
-      // buffer. This handles partial code blocks that may be completed in
-      // future chunks.
       final output = foundEnd ? str.substring(0, endIndex) : str;
       yield output;
       buffer.clear();
     }
 
-    // Note: If stream ends without an end marker, we've already yielded all
-    // content.
+    // If we never saw a start marker, yield whatever raw text we buffered so
+    // the caller isn't left with an empty stream.
+    if (!foundStart && buffer.isNotEmpty) {
+      yield buffer.toString();
+    }
   }
 
   final _cachedAllowedPackages = <AppType, List<String>>{
@@ -283,8 +400,7 @@ $prompt
   ) {
     final instructions = _appInstructions[appType]!;
     final packageList = _allowedPackages(appType).map((p) => '- $p').join('\n');
-    final footer =
-        '''
+    final footer = '''
 ALLOWED PACKAGES
 The following packages, at the specified versions, are allowed:
 $packageList
@@ -391,14 +507,13 @@ using the map function on Lists and other Iterables.
 
 When a generic type argument has a type constraint, be sure that the value given
 to the generic is of a compatible type. For example, when using a class defined
-as ChangeNotifierProvider<T extends ChangeNotifier?>, make sure that the
-provided data class is of type ChangeNotifier?.
+as ChangeNotifierProvider<T extends ChangeNotifier?>, make sure the provided
+data class is of type ChangeNotifier?.
 
 Anything returned from the function given as the create argument of a
 ChangeNotifierProvider<T extends ChangeNotifier?> must extend ChangeNotifier, or
 it won't compile. The return type of the create function must be a
-ChangeNotifier?, so the type of the value returned must extend ChangeNotifier.
-If it returns a simple Object, it will not compile.
+ChangeNotifier?. If it returns a simple Object, it will not compile.
 
 When using ChangeNotifierProvider, use the `builder` parameter rather than the
 `child` parameter to ensure that the correct context is used. E.g.
