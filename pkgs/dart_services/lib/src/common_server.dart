@@ -17,6 +17,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'analysis.dart';
 import 'caching.dart';
+import 'compile_serve.dart';
 import 'compiling.dart';
 
 import 'generative_ai.dart';
@@ -67,6 +68,7 @@ class CommonServerImpl {
 class CommonServerApi {
   final CommonServerImpl impl;
   final TaskScheduler scheduler = TaskScheduler();
+  late final CompileServe compileServe = CompileServe(impl)..start();
 
   /// The shelf router.
   late final Router router = () {
@@ -84,6 +86,10 @@ class CommonServerApi {
       router.mount('/artifacts/', _serveCachedArtifacts(artifactsDir.path));
     }
 
+    // serve self-hosted compiled apps (fitd26 chromeless iframe runner)
+    router.get(r'/compiled/<id>', compileServe.handleServeShell);
+    router.get(r'/compiled/<id>/main.dart.js', compileServe.handleServeJs);
+
     // general requests (POST)
     router.post(r'/api/<apiVersion>/analyze', handleAnalyze);
     router.post(r'/api/<apiVersion>/compileDDC', handleCompileDDC);
@@ -91,6 +97,10 @@ class CommonServerApi {
     router.post(
       r'/api/<apiVersion>/compileNewDDCReload',
       handleCompileNewDDCReload,
+    );
+    router.post(
+      r'/api/<apiVersion>/compileAndServe',
+      compileServe.handleCompileAndServe,
     );
     router.post(r'/api/<apiVersion>/complete', handleComplete);
     router.post(r'/api/<apiVersion>/fixes', handleFixes);
@@ -107,7 +117,10 @@ class CommonServerApi {
 
   Future<void> init() => impl.init();
 
-  Future<void> shutdown() => impl.shutdown();
+  Future<void> shutdown() async {
+    await compileServe.shutdown();
+    await impl.shutdown();
+  }
 
   Future<Response> handleVersion(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);

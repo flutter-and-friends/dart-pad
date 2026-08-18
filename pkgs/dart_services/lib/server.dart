@@ -101,6 +101,12 @@ class EndpointsServer {
       port,
     );
 
+    // The fitd26 chromeless iframe runner is embedded cross-origin by the app
+    // (served from a different port). dart:_http seeds `X-Frame-Options:
+    // SAMEORIGIN` by default, which blocks that embedding; clear it. CORS on
+    // the API routes is unchanged.
+    endpointsServer.server.defaultResponseHeaders.removeAll('x-frame-options');
+
     return endpointsServer;
   }
 
