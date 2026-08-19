@@ -490,6 +490,7 @@ class CommonServerApi {
         prompt: generateCodeRequest.prompt,
         attachments: generateCodeRequest.attachments,
         model: _modelOverride(body),
+        reasoningEffort: _reasoningEffort(body),
       ),
     );
   }
@@ -518,6 +519,14 @@ class CommonServerApi {
   /// so it is read leniently here; absent/empty means the boot-time default.
   static String? _modelOverride(Map<String, dynamic> body) {
     final value = body['model'];
+    return value is String && value.isNotEmpty ? value : null;
+  }
+
+  /// Reads the optional per-request `reasoning_effort` ("low"|"medium"|"high")
+  /// — the Berget/OpenAI thinking-mode knob. Read leniently like the model
+  /// override (kept out of the codegen schema); absent = the provider default.
+  static String? _reasoningEffort(Map<String, dynamic> body) {
+    final value = body['reasoning_effort'];
     return value is String && value.isNotEmpty ? value : null;
   }
 

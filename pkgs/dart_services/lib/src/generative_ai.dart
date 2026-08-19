@@ -46,6 +46,7 @@ class _OpenAiChatClient {
     required String system,
     required String user,
     String? modelOverride,
+    String? reasoningEffort,
   }) async* {
     final effectiveModel =
         (modelOverride != null && modelOverride.isNotEmpty)
@@ -58,6 +59,8 @@ class _OpenAiChatClient {
       ..body = jsonEncode({
         'model': effectiveModel,
         'stream': true,
+        if (reasoningEffort != null && reasoningEffort.isNotEmpty)
+          'reasoning_effort': reasoningEffort,
         'messages': [
           {'role': 'system', 'content': system},
           {'role': 'user', 'content': user},
@@ -307,6 +310,7 @@ $source
     required String prompt,
     required List<Attachment> attachments,
     String? model,
+    String? reasoningEffort,
   }) async* {
     _checkCanAI();
     _rejectAttachments(attachments);
@@ -320,6 +324,7 @@ $source
         system: systemInstructions,
         user: prompt,
         modelOverride: model,
+        reasoningEffort: reasoningEffort,
       ),
     );
   }
