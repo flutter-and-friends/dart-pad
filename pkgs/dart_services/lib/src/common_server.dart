@@ -461,9 +461,8 @@ class CommonServerApi {
   Future<Response> suggestFix(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
 
-    final suggestFixRequest = api.SuggestFixRequest.fromJson(
-      await request.readAsJson(),
-    );
+    final body = await request.readAsJson();
+    final suggestFixRequest = api.SuggestFixRequest.fromJson(body);
 
     return _streamResponse(
       'suggestFix',
@@ -473,6 +472,7 @@ class CommonServerApi {
         line: suggestFixRequest.line,
         column: suggestFixRequest.column,
         source: suggestFixRequest.source,
+        model: _modelOverride(body),
       ),
     );
   }
@@ -480,9 +480,8 @@ class CommonServerApi {
   Future<Response> generateCode(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
 
-    final generateCodeRequest = api.GenerateCodeRequest.fromJson(
-      await request.readAsJson(),
-    );
+    final body = await request.readAsJson();
+    final generateCodeRequest = api.GenerateCodeRequest.fromJson(body);
 
     return _streamResponse(
       'generateCode',
@@ -490,6 +489,7 @@ class CommonServerApi {
         appType: generateCodeRequest.appType,
         prompt: generateCodeRequest.prompt,
         attachments: generateCodeRequest.attachments,
+        model: _modelOverride(body),
       ),
     );
   }
@@ -497,9 +497,8 @@ class CommonServerApi {
   Future<Response> updateCode(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
 
-    final updateCodeRequest = api.UpdateCodeRequest.fromJson(
-      await request.readAsJson(),
-    );
+    final body = await request.readAsJson();
+    final updateCodeRequest = api.UpdateCodeRequest.fromJson(body);
 
     return _streamResponse(
       'updateCode',
@@ -508,8 +507,18 @@ class CommonServerApi {
         prompt: updateCodeRequest.prompt,
         source: updateCodeRequest.source,
         attachments: updateCodeRequest.attachments,
+        model: _modelOverride(body),
       ),
     );
+  }
+
+  /// Reads the optional per-request `model` override the room service sends to
+  /// fail generation over to a different Berget model live. Not part of the
+  /// generated `*Request.fromJson` schema (kept out to avoid a codegen cycle),
+  /// so it is read leniently here; absent/empty means the boot-time default.
+  static String? _modelOverride(Map<String, dynamic> body) {
+    final value = body['model'];
+    return value is String && value.isNotEmpty ? value : null;
   }
 
   Future<Response> _streamResponse(

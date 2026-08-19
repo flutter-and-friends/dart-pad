@@ -38,16 +38,25 @@ class _OpenAiChatClient {
   ///
   /// Parses the SSE (`data: {...}`) stream and yields each
   /// `choices[0].delta.content` payload, stopping at `data: [DONE]`.
+  ///
+  /// [modelOverride], when non-empty, replaces the boot-time [model] for this
+  /// one request — this is how the room service fails over live without a
+  /// backend restart.
   Stream<String> chatStream({
     required String system,
     required String user,
+    String? modelOverride,
   }) async* {
+    final effectiveModel =
+        (modelOverride != null && modelOverride.isNotEmpty)
+            ? modelOverride
+            : model;
     final token = await _BergetAuth.token(apiUrl);
     final request = http.Request('POST', Uri.parse('$apiUrl/v1/chat/completions'))
       ..headers['Authorization'] = 'Bearer $token'
       ..headers['Content-Type'] = 'application/json'
       ..body = jsonEncode({
-        'model': model,
+        'model': effectiveModel,
         'stream': true,
         'messages': [
           {'role': 'system', 'content': system},
@@ -55,6 +64,11 @@ class _OpenAiChatClient {
         ],
       });
 
+    // Bound ONLY the connection (time to response headers). The body streams
+    // afterwards and — for a reasoning model on a realistic prompt — can run
+    // for minutes; a total timeout here is exactly the WI-098 "hang" (a
+    // slow-but-alive stream aborted as if dead). A genuinely wedged stream is
+    // bounded by the inter-chunk watchdog below.
     final http.StreamedResponse response;
     try {
       response = await request.send().timeout(const Duration(seconds: 30));
@@ -70,9 +84,26 @@ class _OpenAiChatClient {
     }
 
     // Parse SSE lines. Lines may be split across chunk boundaries, so buffer
-    // and only process complete lines.
+    // and only process complete lines. The stream is bounded by an inter-chunk
+    // watchdog: if no bytes arrive for [_chunkTimeout], the upstream is wedged
+    // (not merely slow — a live stream always emits *some* chunk within this
+    // window) and we fail fast so the pipeline can regenerate/fail over rather
+    // than sit on a 0-byte hang. Slow generations that keep emitting are left
+    // alone.
+    const chunkTimeout = Duration(seconds: 90);
     final buffer = StringBuffer();
-    await for (final chunk in response.stream.transform(utf8.decoder)) {
+    final chunkStream = response.stream
+        .transform(utf8.decoder)
+        .timeout(
+          chunkTimeout,
+          onTimeout: (sink) => sink.addError(
+            TimeoutException(
+              'no chunk from generation backend for ${chunkTimeout.inSeconds}s',
+              chunkTimeout,
+            ),
+          ),
+        );
+    await for (final chunk in chunkStream) {
       buffer.write(chunk);
       var text = buffer.toString();
       var newlineIndex = text.indexOf('\n');
@@ -247,6 +278,7 @@ description.
     required int? line,
     required int? column,
     required String source,
+    String? model,
   }) async* {
     _checkCanAI();
 
@@ -262,7 +294,11 @@ $source
 ''';
 
     yield* cleanCode(
-      _client!.chatStream(system: systemInstructions, user: prompt),
+      _client!.chatStream(
+        system: systemInstructions,
+        user: prompt,
+        modelOverride: model,
+      ),
     );
   }
 
@@ -270,6 +306,7 @@ $source
     required AppType appType,
     required String prompt,
     required List<Attachment> attachments,
+    String? model,
   }) async* {
     _checkCanAI();
     _rejectAttachments(attachments);
@@ -279,7 +316,11 @@ $source
         : _newFlutterCodeInstructions;
 
     yield* cleanCode(
-      _client!.chatStream(system: systemInstructions, user: prompt),
+      _client!.chatStream(
+        system: systemInstructions,
+        user: prompt,
+        modelOverride: model,
+      ),
     );
   }
 
@@ -288,6 +329,7 @@ $source
     required String prompt,
     required String source,
     required List<Attachment> attachments,
+    String? model,
   }) async* {
     _checkCanAI();
     _rejectAttachments(attachments);
@@ -305,7 +347,11 @@ $prompt
 ''';
 
     yield* cleanCode(
-      _client!.chatStream(system: systemInstructions, user: completePrompt),
+      _client!.chatStream(
+        system: systemInstructions,
+        user: completePrompt,
+        modelOverride: model,
+      ),
     );
   }
 
