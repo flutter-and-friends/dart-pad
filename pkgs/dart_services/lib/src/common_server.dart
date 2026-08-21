@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:dartpad_shared/model.dart' as api;
 import 'package:dartpad_shared/ws.dart';
 import 'package:logging/logging.dart';
+import 'package:mime/mime.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
@@ -17,6 +18,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'analysis.dart';
 import 'caching.dart';
+import 'compile_serve.dart';
 import 'compiling.dart';
 
 import 'generative_ai.dart';
@@ -67,6 +69,7 @@ class CommonServerImpl {
 class CommonServerApi {
   final CommonServerImpl impl;
   final TaskScheduler scheduler = TaskScheduler();
+  late final CompileServe compileServe = CompileServe(impl)..start();
 
   /// The shelf router.
   late final Router router = () {
@@ -82,7 +85,22 @@ class CommonServerApi {
     final artifactsDir = Directory('artifacts');
     if (artifactsDir.existsSync()) {
       router.mount('/artifacts/', _serveCachedArtifacts(artifactsDir.path));
+
+      // fitd26: the compiled-app shell sets assetBase: '/', so the engine
+      // fetches its app-facing assets (FontManifest.json, fonts) at the
+      // server root. grind stages them under artifacts/assets/, so the same
+      // cached static handler serves them here. Deliberately shallow: any
+      // deeper path (a made-up ../../ traversal landing on the real
+      // artifacts/) falls through to the global 404.
+      final appAssetsDir = Directory('${artifactsDir.path}/assets');
+      if (appAssetsDir.existsSync()) {
+        router.mount('/assets/', _serveCachedArtifacts(appAssetsDir.path));
+      }
     }
+
+    // serve self-hosted compiled apps (fitd26 chromeless iframe runner)
+    router.get(r'/compiled/<id>', compileServe.handleServeShell);
+    router.get(r'/compiled/<id>/main.dart.js', compileServe.handleServeJs);
 
     // general requests (POST)
     router.post(r'/api/<apiVersion>/analyze', handleAnalyze);
@@ -91,6 +109,10 @@ class CommonServerApi {
     router.post(
       r'/api/<apiVersion>/compileNewDDCReload',
       handleCompileNewDDCReload,
+    );
+    router.post(
+      r'/api/<apiVersion>/compileAndServe',
+      compileServe.handleCompileAndServe,
     );
     router.post(r'/api/<apiVersion>/complete', handleComplete);
     router.post(r'/api/<apiVersion>/fixes', handleFixes);
@@ -107,7 +129,10 @@ class CommonServerApi {
 
   Future<void> init() => impl.init();
 
-  Future<void> shutdown() => impl.shutdown();
+  Future<void> shutdown() async {
+    await compileServe.shutdown();
+    await impl.shutdown();
+  }
 
   Future<Response> handleVersion(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
@@ -448,9 +473,8 @@ class CommonServerApi {
   Future<Response> suggestFix(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
 
-    final suggestFixRequest = api.SuggestFixRequest.fromJson(
-      await request.readAsJson(),
-    );
+    final body = await request.readAsJson();
+    final suggestFixRequest = api.SuggestFixRequest.fromJson(body);
 
     return _streamResponse(
       'suggestFix',
@@ -460,6 +484,7 @@ class CommonServerApi {
         line: suggestFixRequest.line,
         column: suggestFixRequest.column,
         source: suggestFixRequest.source,
+        model: _modelOverride(body),
       ),
     );
   }
@@ -467,9 +492,8 @@ class CommonServerApi {
   Future<Response> generateCode(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
 
-    final generateCodeRequest = api.GenerateCodeRequest.fromJson(
-      await request.readAsJson(),
-    );
+    final body = await request.readAsJson();
+    final generateCodeRequest = api.GenerateCodeRequest.fromJson(body);
 
     return _streamResponse(
       'generateCode',
@@ -477,6 +501,8 @@ class CommonServerApi {
         appType: generateCodeRequest.appType,
         prompt: generateCodeRequest.prompt,
         attachments: generateCodeRequest.attachments,
+        model: _modelOverride(body),
+        reasoningEffort: _reasoningEffort(body),
       ),
     );
   }
@@ -484,9 +510,8 @@ class CommonServerApi {
   Future<Response> updateCode(Request request, String apiVersion) async {
     if (apiVersion != api3) return unhandledVersion(apiVersion);
 
-    final updateCodeRequest = api.UpdateCodeRequest.fromJson(
-      await request.readAsJson(),
-    );
+    final body = await request.readAsJson();
+    final updateCodeRequest = api.UpdateCodeRequest.fromJson(body);
 
     return _streamResponse(
       'updateCode',
@@ -495,8 +520,26 @@ class CommonServerApi {
         prompt: updateCodeRequest.prompt,
         source: updateCodeRequest.source,
         attachments: updateCodeRequest.attachments,
+        model: _modelOverride(body),
       ),
     );
+  }
+
+  /// Reads the optional per-request `model` override the room service sends to
+  /// fail generation over to a different Berget model live. Not part of the
+  /// generated `*Request.fromJson` schema (kept out to avoid a codegen cycle),
+  /// so it is read leniently here; absent/empty means the boot-time default.
+  static String? _modelOverride(Map<String, dynamic> body) {
+    final value = body['model'];
+    return value is String && value.isNotEmpty ? value : null;
+  }
+
+  /// Reads the optional per-request `reasoning_effort` ("low"|"medium"|"high")
+  /// — the Berget/OpenAI thinking-mode knob. Read leniently like the model
+  /// override (kept out of the codegen schema); absent = the provider default.
+  static String? _reasoningEffort(Map<String, dynamic> body) {
+    final value = body['reasoning_effort'];
+    return value is String && value.isNotEmpty ? value : null;
   }
 
   Future<Response> _streamResponse(
@@ -608,8 +651,26 @@ class CommonServerApi {
   }
 }
 
+/// Content types for the compiled artifacts, pinned explicitly so nosniff
+/// browsers (the fitd26 iframes run with X-Content-Type-Options: nosniff)
+/// never refuse a legitimately served script or wasm module. The defaults
+/// from package:mime cover these, but pinning removes any dependence on
+/// magic-number detection or pub upgrades for the exact extension set the
+/// shell and engine load.
+final MimeTypeResolver _artifactContentTypes = MimeTypeResolver()
+  ..addExtension('js', 'application/javascript; charset=utf-8')
+  ..addExtension('wasm', 'application/wasm')
+  ..addExtension('map', 'application/json; charset=utf-8')
+  ..addExtension('symbols', 'text/plain; charset=utf-8')
+  ..addExtension('otf', 'font/otf')
+  ..addExtension('ttf', 'font/ttf')
+  ..addExtension('dill', 'application/octet-stream');
+
 Handler _serveCachedArtifacts(String artifactsPath) {
-  final artifactsHandler = createStaticHandler(artifactsPath);
+  final artifactsHandler = createStaticHandler(
+    artifactsPath,
+    contentTypeResolver: _artifactContentTypes,
+  );
 
   return (Request request) async {
     var response = await artifactsHandler(request);

@@ -39,6 +39,25 @@ class ProjectTemplates {
   static ProjectTemplates instance = ProjectTemplates._factory();
 
   static String _templatesDirectoryPath() {
+    // Preferred: resolve relative to the running entrypoint. Under
+    // `dart run bin/server.dart` Platform.script is .../pkgs/dart_services/
+    // bin/server.dart, so `<script>/../project_templates` lands on the real
+    // directory. For an AOT binary Platform.script is the binary itself
+    // (e.g. /app/server), which yields /app/project_templates — exactly
+    // where the runtime image COPYs it. The CWD-based fallback below keeps
+    // the historical behavior for any layout the script-relative path
+    // doesn't cover.
+    final scriptPath = Platform.script.toFilePath();
+    final scriptRelative = normalizeAbsolutePath(
+      path.join(path.dirname(scriptPath), 'project_templates'),
+    );
+    if (Directory(scriptRelative).existsSync()) return scriptRelative;
+
+    // Fallback (upstream behavior): CWD's parent + dart_services/
+    // project_templates. Correct when the process runs with CWD =
+    // pkgs/dart_services (the grind tasks and the dev flow), wrong for an
+    // AOT binary started with CWD=/ (the compose runtime hit this as
+    // '/dart_services/project_templates').
     final dir = path.join(
       Directory.current.path,
       '..',

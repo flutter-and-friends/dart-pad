@@ -251,6 +251,89 @@ Future<void> _buildStorageArtifacts(
 
     copy(joinFile(dir, ['flutter_web_new.js']), artifactsDir);
     copy(joinFile(dir, ['flutter_web_new.js.map']), artifactsDir);
+
+    // Static runtime assets the compiled-app shell (compile_serve.dart
+    // `_shellHtml`) loads from /artifacts/: require.js + flutter.js in
+    // <script> tags, and canvaskit/ via canvasKitBaseUrl. Without these the
+    // deployed backend 404s them and every compiled iframe dies with
+    // "require is not defined".
+
+    // require.js: use the copy vendored in dartpad_ui/web — it is the loader
+    // dartpad_ui's frame.html pairs with ddc_module_loader for the new-DDC
+    // (library bundle) bootstrap, which is exactly the combination the shell
+    // uses. (The Dart SDK ships a different, much larger require.js under
+    // lib/dev_compiler/amd/ for the legacy AMD pipeline.)
+    copy(
+      getFile(
+        path.join(
+          Directory.current.parent.path,
+          'dartpad_ui',
+          'web',
+          'require.js',
+        ),
+      ),
+      artifactsDir,
+    );
+
+    // flutter.js: the flutter_tools web bootstrap script
+    // (_flutter.loader.loadEntrypoint).
+    final flutterWebSdkRoot = path.dirname(sdk.flutterWebSdkPath);
+    copy(
+      getFile(path.join(flutterWebSdkRoot, 'flutter_js', 'flutter.js')),
+      artifactsDir,
+    );
+
+    // canvaskit/: the engine renderer the shell points canvasKitBaseUrl at.
+    _copyDirectory(
+      getDir(path.join(flutterWebSdkRoot, 'canvaskit')),
+      getDir(path.join(artifactsDir.path, 'canvaskit')),
+    );
+  }
+
+  // App-facing engine assets the compiled app fetches at the server root
+  // (the shell sets assetBase: '/'), staged under artifacts/ so the existing
+  // route serves them at /assets/<...>. The engine always requests
+  // FontManifest.json on boot; without it every Icons.* glyph renders as a
+  // tofu box. This is intentionally a fixed, minimal manifest: compiled apps
+  // have no pubspec-declared assets of their own today, and the general
+  // per-app asset pipeline is a separate (deferred) redesign.
+  final assetsDir = getDir(path.join(artifactsDir.path, 'assets'));
+  copy(
+    getFile(
+      path.join(
+        sdk.flutterBinPath,
+        'cache',
+        'artifacts',
+        'material_fonts',
+        'MaterialIcons-Regular.otf',
+      ),
+    ),
+    getDir(path.join(assetsDir.path, 'fonts')),
+  );
+  joinFile(assetsDir, ['FontManifest.json']).writeAsStringSync(
+    '${const JsonEncoder.withIndent('  ').convert(const [
+          {
+            'family': 'MaterialIcons',
+            'fonts': [
+              {'asset': 'fonts/MaterialIcons-Regular.otf'},
+            ],
+          },
+        ])}\n',
+  );
+}
+
+/// Recursively copies the contents of [source] into [destination].
+void _copyDirectory(Directory source, Directory destination) {
+  destination.createSync(recursive: true);
+  for (final entity in source.listSync(recursive: true)) {
+    if (entity is File) {
+      final target = path.join(
+        destination.path,
+        path.relative(entity.path, from: source.path),
+      );
+      File(target).parent.createSync(recursive: true);
+      entity.copySync(target);
+    }
   }
 }
 
