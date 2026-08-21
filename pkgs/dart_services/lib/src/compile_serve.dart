@@ -221,11 +221,15 @@ String _shellHtml(_CompiledApp app, String id) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>fitd26</title>
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #fff; }
+    /* Always dark: this shell is embedded by fitd26, which is dark-only
+       (ThemeMode.dark). The iframe document can't see the Flutter app's
+       theme — prefers-color-scheme here reflects the OS, not the embedder —
+       so a media query would white-flash light-OS users inside the dark UI. */
+    html, body { margin: 0; padding: 0; height: 100%; background: #121212; }
     #fitd26-status {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; font: 14px/1.4 system-ui, sans-serif;
-      color: #666;
+      color: #b3b3b3;
     }
   </style>
   <script src="${artifactsBase}require.js"></script>
