@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:dartpad_shared/model.dart' as api;
 import 'package:dartpad_shared/ws.dart';
 import 'package:logging/logging.dart';
+import 'package:mime/mime.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 import 'package:shelf_static/shelf_static.dart';
@@ -639,8 +640,24 @@ class CommonServerApi {
   }
 }
 
+/// Content types for the compiled artifacts, pinned explicitly so nosniff
+/// browsers (the fitd26 iframes run with X-Content-Type-Options: nosniff)
+/// never refuse a legitimately served script or wasm module. The defaults
+/// from package:mime cover these, but pinning removes any dependence on
+/// magic-number detection or pub upgrades for the exact extension set the
+/// shell and engine load.
+final MimeTypeResolver _artifactContentTypes = MimeTypeResolver()
+  ..addExtension('js', 'application/javascript; charset=utf-8')
+  ..addExtension('wasm', 'application/wasm')
+  ..addExtension('map', 'application/json; charset=utf-8')
+  ..addExtension('symbols', 'text/plain; charset=utf-8')
+  ..addExtension('dill', 'application/octet-stream');
+
 Handler _serveCachedArtifacts(String artifactsPath) {
-  final artifactsHandler = createStaticHandler(artifactsPath);
+  final artifactsHandler = createStaticHandler(
+    artifactsPath,
+    contentTypeResolver: _artifactContentTypes,
+  );
 
   return (Request request) async {
     var response = await artifactsHandler(request);

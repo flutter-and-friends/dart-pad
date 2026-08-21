@@ -251,6 +251,58 @@ Future<void> _buildStorageArtifacts(
 
     copy(joinFile(dir, ['flutter_web_new.js']), artifactsDir);
     copy(joinFile(dir, ['flutter_web_new.js.map']), artifactsDir);
+
+    // Static runtime assets the compiled-app shell (compile_serve.dart
+    // `_shellHtml`) loads from /artifacts/: require.js + flutter.js in
+    // <script> tags, and canvaskit/ via canvasKitBaseUrl. Without these the
+    // deployed backend 404s them and every compiled iframe dies with
+    // "require is not defined".
+
+    // require.js: use the copy vendored in dartpad_ui/web — it is the loader
+    // dartpad_ui's frame.html pairs with ddc_module_loader for the new-DDC
+    // (library bundle) bootstrap, which is exactly the combination the shell
+    // uses. (The Dart SDK ships a different, much larger require.js under
+    // lib/dev_compiler/amd/ for the legacy AMD pipeline.)
+    copy(
+      getFile(
+        path.join(
+          Directory.current.parent.path,
+          'dartpad_ui',
+          'web',
+          'require.js',
+        ),
+      ),
+      artifactsDir,
+    );
+
+    // flutter.js: the flutter_tools web bootstrap script
+    // (_flutter.loader.loadEntrypoint).
+    final flutterWebSdkRoot = path.dirname(sdk.flutterWebSdkPath);
+    copy(
+      getFile(path.join(flutterWebSdkRoot, 'flutter_js', 'flutter.js')),
+      artifactsDir,
+    );
+
+    // canvaskit/: the engine renderer the shell points canvasKitBaseUrl at.
+    _copyDirectory(
+      getDir(path.join(flutterWebSdkRoot, 'canvaskit')),
+      getDir(path.join(artifactsDir.path, 'canvaskit')),
+    );
+  }
+}
+
+/// Recursively copies the contents of [source] into [destination].
+void _copyDirectory(Directory source, Directory destination) {
+  destination.createSync(recursive: true);
+  for (final entity in source.listSync(recursive: true)) {
+    if (entity is File) {
+      final target = path.join(
+        destination.path,
+        path.relative(entity.path, from: source.path),
+      );
+      File(target).parent.createSync(recursive: true);
+      entity.copySync(target);
+    }
   }
 }
 
