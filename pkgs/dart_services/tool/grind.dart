@@ -289,6 +289,37 @@ Future<void> _buildStorageArtifacts(
       getDir(path.join(artifactsDir.path, 'canvaskit')),
     );
   }
+
+  // App-facing engine assets the compiled app fetches at the server root
+  // (the shell sets assetBase: '/'), staged under artifacts/ so the existing
+  // route serves them at /assets/<...>. The engine always requests
+  // FontManifest.json on boot; without it every Icons.* glyph renders as a
+  // tofu box. This is intentionally a fixed, minimal manifest: compiled apps
+  // have no pubspec-declared assets of their own today, and the general
+  // per-app asset pipeline is a separate (deferred) redesign.
+  final assetsDir = getDir(path.join(artifactsDir.path, 'assets'));
+  copy(
+    getFile(
+      path.join(
+        sdk.flutterBinPath,
+        'cache',
+        'artifacts',
+        'material_fonts',
+        'MaterialIcons-Regular.otf',
+      ),
+    ),
+    getDir(path.join(assetsDir.path, 'fonts')),
+  );
+  joinFile(assetsDir, ['FontManifest.json']).writeAsStringSync(
+    '${const JsonEncoder.withIndent('  ').convert(const [
+          {
+            'family': 'MaterialIcons',
+            'fonts': [
+              {'asset': 'fonts/MaterialIcons-Regular.otf'},
+            ],
+          },
+        ])}\n',
+  );
 }
 
 /// Recursively copies the contents of [source] into [destination].

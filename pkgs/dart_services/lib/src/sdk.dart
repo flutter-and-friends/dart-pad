@@ -24,6 +24,9 @@ final class Sdk {
   /// The path to the Flutter binaries.
   final String _flutterBinPath;
 
+  /// The path to the Flutter binaries.
+  String get flutterBinPath => _flutterBinPath;
+
   /// The current version of the Dart SDK, including any `-dev` suffix.
   final String dartVersion;
 

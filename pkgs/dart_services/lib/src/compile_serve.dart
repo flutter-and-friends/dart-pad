@@ -5,6 +5,12 @@
 //                                             | 400 {error, problems[]}
 //   GET  /compiled/<id>              -> chromeless HTML runner shell
 //   GET  /compiled/<id>/main.dart.js -> the compiled DDC JS
+//   GET  /assets/<...>               -> app-facing engine assets the shell's
+//                                       assetBase: '/' points at the server
+//                                       root (FontManifest.json, MaterialIcons
+//                                       font) — staged under artifacts/assets/
+//                                       by grind and mounted in
+//                                       common_server.dart.
 //
 // The HTML shell bootstraps the new-DDC ("library bundle") module system the
 // same way dartpad_ui's frame does (require.js + ddc_module_loader +

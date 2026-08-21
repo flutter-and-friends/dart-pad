@@ -85,6 +85,17 @@ class CommonServerApi {
     final artifactsDir = Directory('artifacts');
     if (artifactsDir.existsSync()) {
       router.mount('/artifacts/', _serveCachedArtifacts(artifactsDir.path));
+
+      // fitd26: the compiled-app shell sets assetBase: '/', so the engine
+      // fetches its app-facing assets (FontManifest.json, fonts) at the
+      // server root. grind stages them under artifacts/assets/, so the same
+      // cached static handler serves them here. Deliberately shallow: any
+      // deeper path (a made-up ../../ traversal landing on the real
+      // artifacts/) falls through to the global 404.
+      final appAssetsDir = Directory('${artifactsDir.path}/assets');
+      if (appAssetsDir.existsSync()) {
+        router.mount('/assets/', _serveCachedArtifacts(appAssetsDir.path));
+      }
     }
 
     // serve self-hosted compiled apps (fitd26 chromeless iframe runner)
@@ -651,6 +662,8 @@ final MimeTypeResolver _artifactContentTypes = MimeTypeResolver()
   ..addExtension('wasm', 'application/wasm')
   ..addExtension('map', 'application/json; charset=utf-8')
   ..addExtension('symbols', 'text/plain; charset=utf-8')
+  ..addExtension('otf', 'font/otf')
+  ..addExtension('ttf', 'font/ttf')
   ..addExtension('dill', 'application/octet-stream');
 
 Handler _serveCachedArtifacts(String artifactsPath) {
