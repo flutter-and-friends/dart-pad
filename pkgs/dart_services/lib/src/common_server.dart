@@ -86,7 +86,7 @@ class CommonServerApi {
     if (artifactsDir.existsSync()) {
       router.mount('/artifacts/', _serveCachedArtifacts(artifactsDir.path));
 
-      // fitd26: the compiled-app shell sets assetBase: '/', so the engine
+      // fitd: the compiled-app shell sets assetBase: '/', so the engine
       // fetches its app-facing assets (FontManifest.json, fonts) at the
       // server root. grind stages them under artifacts/assets/, so the same
       // cached static handler serves them here. Deliberately shallow: any
@@ -98,7 +98,7 @@ class CommonServerApi {
       }
     }
 
-    // serve self-hosted compiled apps (fitd26 chromeless iframe runner)
+    // serve self-hosted compiled apps (fitd chromeless iframe runner)
     router.get(r'/compiled/<id>', compileServe.handleServeShell);
     router.get(r'/compiled/<id>/main.dart.js', compileServe.handleServeJs);
 
@@ -652,7 +652,7 @@ class CommonServerApi {
 }
 
 /// Content types for the compiled artifacts, pinned explicitly so nosniff
-/// browsers (the fitd26 iframes run with X-Content-Type-Options: nosniff)
+/// browsers (the fitd iframes run with X-Content-Type-Options: nosniff)
 /// never refuse a legitimately served script or wasm module. The defaults
 /// from package:mime cover these, but pinning removes any dependence on
 /// magic-number detection or pub upgrades for the exact extension set the
