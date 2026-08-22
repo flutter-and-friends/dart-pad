@@ -1,4 +1,4 @@
-// Flutter in the Dark: self-hosted serving of compiled DDC output.
+// fitd26: self-hosted serving of compiled DDC output.
 //
 // Implements the production compile+serve contract:
 //   POST /api/v3/compileAndServe {source} -> {id, url, jsUrl, expiresAt}
@@ -219,14 +219,14 @@ String _shellHtml(_CompiledApp app, String id) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Flutter in the Dark</title>
+  <title>fitd26</title>
   <style>
-    /* Always dark: this shell is embedded by Flutter in the Dark, which is dark-only
+    /* Always dark: this shell is embedded by fitd26, which is dark-only
        (ThemeMode.dark). The iframe document can't see the Flutter app's
        theme — prefers-color-scheme here reflects the OS, not the embedder —
        so a media query would white-flash light-OS users inside the dark UI. */
     html, body { margin: 0; padding: 0; height: 100%; background: #121212; }
-    #fitd-status {
+    #fitd26-status {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; font: 14px/1.4 system-ui, sans-serif;
       color: #b3b3b3;
@@ -236,25 +236,25 @@ String _shellHtml(_CompiledApp app, String id) {
   <script src="${artifactsBase}flutter.js"></script>
 </head>
 <body>
-  <div id="fitd-status">loading&hellip;</div>
+  <div id="fitd26-status">loading&hellip;</div>
   <script>
     // The bootstrap (kBootstrapFlutterCode / kBootstrapDartCode) reports
     // framework errors through this global.
     window.reportFlutterError = function(message) {
       console.error('[flutter]', message);
       try {
-        parent.postMessage({sender: 'fitd-frame', type: 'stderr',
+        parent.postMessage({sender: 'fitd26-frame', type: 'stderr',
                             message: String(message)}, '*');
       } catch (_) {}
     };
 
     window.onerror = function(message, url, line, column, error) {
-      var el = document.getElementById('fitd-status');
-      if (el && !window.__fitdStarted) {
+      var el = document.getElementById('fitd26-status');
+      if (el && !window.__fitd26Started) {
         el.textContent = 'failed to start: ' + message;
       }
       try {
-        parent.postMessage({sender: 'fitd-frame', type: 'jserr',
+        parent.postMessage({sender: 'fitd26-frame', type: 'jserr',
                             message: String(message)}, '*');
       } catch (_) {}
     };
@@ -262,7 +262,7 @@ String _shellHtml(_CompiledApp app, String id) {
     function dartPrint(message) {
       console.log('[app]', message);
       try {
-        parent.postMessage({sender: 'fitd-frame', type: 'stdout',
+        parent.postMessage({sender: 'fitd26-frame', type: 'stdout',
                             message: String(message)}, '*');
       } catch (_) {}
     }
@@ -286,8 +286,8 @@ String _shellHtml(_CompiledApp app, String id) {
           '{ let __ddcInitCode = function() {' + compiledJs + '};' +
           ' function contextLoaded() {' +
           '   __ddcInitCode();' +
-          '   window.__fitdStarted = true;' +
-          '   var el = document.getElementById("fitd-status");' +
+          '   window.__fitd26Started = true;' +
+          '   var el = document.getElementById("fitd26-status");' +
           '   if (el) el.style.display = "none";' +
           '   dartDevEmbedder.runMain("package:dartpad_sample/bootstrap.dart", {});' +
           ' }' +
@@ -307,10 +307,10 @@ String _shellHtml(_CompiledApp app, String id) {
         });
       })
       .catch(function(err) {
-        var el = document.getElementById('fitd-status');
+        var el = document.getElementById('fitd26-status');
         if (el) el.textContent = 'failed to load: ' + err.message;
         try {
-          parent.postMessage({sender: 'fitd-frame', type: 'jserr',
+          parent.postMessage({sender: 'fitd26-frame', type: 'jserr',
                               message: String(err)}, '*');
         } catch (_) {}
       });

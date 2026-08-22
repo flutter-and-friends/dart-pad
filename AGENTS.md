@@ -2,7 +2,7 @@
 
 ## Rebuild & redeploy
 
-Changes here ship through the Flutter in the Dark deployment's **`dart-services`** image
+Changes here ship through the fitd26 deployment's **`dart-services`** image
 (`flutter-in-the-dark/deploy/Dockerfile.dart-services`), which uses this repo as
 its Docker build context (`DART_PAD_PATH`, default `../dart-pad`). After any
 pushed change, show the user the exact rebuild/redeploy steps:
