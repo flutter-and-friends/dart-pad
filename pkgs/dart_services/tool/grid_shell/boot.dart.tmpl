@@ -1,0 +1,13 @@
+import 'dart:ui_web' as ui_web;
+
+import 'package:fitd_shell/main.dart' as entrypoint;
+
+/// Shell boot — v1 ENGINE mechanics: the shell is the ONE process in the
+/// grid that boots a Flutter engine (fragments never do). No plugins.
+Future<void> main() async {
+  await ui_web.bootstrapEngine(
+    runApp: () {
+      entrypoint.main();
+    },
+  );
+}
