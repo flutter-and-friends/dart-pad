@@ -5,7 +5,7 @@
 // ignore_for_file: unreachable_from_main
 
 import 'dart:async';
-import 'dart:convert' show JsonEncoder;
+import 'dart:convert' show JsonEncoder, jsonDecode;
 import 'dart:io';
 
 import 'package:dart_services/src/project_creator.dart';
@@ -409,4 +409,127 @@ File _pubDependenciesFile({required String channel}) {
       'pub_dependencies_$channel.json',
     ),
   );
+}
+
+/// Builds the fitd one-engine grid SHELL bundle (WI-060) into
+/// `artifacts/grid_shell/main.dart.js`, using the SAME pinned SDK and the
+/// framework summary produced by [buildStorageArtifacts] — the I-123
+/// corridor: shell, fragments and runtime are all grounded by ONE SDK, so
+/// this must run in the same image build as `build-storage-artifacts`
+/// (after it: it consumes `artifacts/flutter_web.dill`).
+///
+/// Mechanical recipe (proven in scratch/fitd-oneengine-grid):
+///  * fixed package name `fitd_shell` (pubspec + package_config, both agree)
+///  * lib/main.dart from `tool/grid_shell/lib/main.dart`
+///  * generated boot.dart (v1 engine-boot mechanics — the shell is the one
+///    process in the grid that boots a Flutter engine) + 2-line entry.dart,
+///    all imports ABSOLUTE `package:fitd_shell/...` (relative-import
+///    canonicalization in new-DDC is unreliable)
+///  * emitted module names are grep-asserted before the bundle is copied
+@Task('Build the fitd grid shell bundle into artifacts/grid_shell/')
+Future<void> buildGridShell() async {
+  final sdk = Sdk.fromLocalFlutter();
+  final summary = File(path.join('artifacts', 'flutter_web.dill'));
+  if (!summary.existsSync()) {
+    throw StateError(
+        'artifacts/flutter_web.dill missing — run `build-storage-artifacts` '
+        'BEFORE `build-grid-shell` (the shell compiles against that '
+        'summary; one pinned SDK grounds everything)');
+  }
+
+    const slug = 'fitd_shell';
+    final temp = Directory.systemTemp.createTempSync('fitd_grid_shell');
+    try {
+      _copyProjectTemplate(sdk, temp.path, package: slug);
+      final libDir = path.join(temp.path, 'lib');
+      File(path.join(libDir, 'main.dart')).writeAsStringSync(
+          File(path.join('tool', 'grid_shell', 'lib', 'main.dart'))
+              .readAsStringSync());
+      File(path.join(libDir, 'boot.dart')).writeAsStringSync(
+          File(path.join('tool', 'grid_shell', 'boot.dart.tmpl'))
+              .readAsStringSync());
+      File(path.join(libDir, 'entry.dart')).writeAsStringSync(
+          File(path.join('tool', 'grid_shell', 'entry.dart.tmpl'))
+              .readAsStringSync());
+
+      final dartBin = path.join(sdk.dartSdkPath, 'bin', 'dart');
+      final outJs = path.join(temp.path, 'main.dart.js');
+      final dartdevc = path.join(
+          sdk.dartSdkPath, 'bin', 'snapshots', 'dartdevc.dart.snapshot');
+      // NOTE: sdk.flutterWebSdkPath already ends in /kernel.
+      final outlinePath =
+          path.join(sdk.flutterWebSdkPath, 'ddc_outline_sound.dill');
+      final outline = File(outlinePath).existsSync()
+          ? outlinePath
+          : path.join(sdk.flutterWebSdkPath, 'ddc_outline.dill');
+      final args = <String>[
+        dartdevc,
+        '--modules=ddc',
+        '--canary',
+        '--reload-delta-kernel=${path.join(temp.path, 'new_kernel.dill')}',
+        '--no-summarize',
+        '-s',
+        summary.path,
+        '-s',
+        outline,
+        '-o',
+        outJs,
+        '--enable-asserts',
+        path.join(libDir, 'entry.dart'),
+        '--packages=${path.join(temp.path, '.dart_tool', 'package_config.json')}',
+      ];
+      final proc = await Process.run(dartBin, args);
+      if (proc.exitCode != 0) {
+        fail('grid shell compile failed (exit ${proc.exitCode}):\n'
+            '[stdout] ${proc.stdout}\n[stderr] ${proc.stderr}');
+      }
+      final js = File(outJs).readAsStringSync();
+      // Corridor tripwire: the entry library must register under its absolute
+      // package name — the shell page's runMain target depends on it.
+      if (!js.contains(
+          'dartDevEmbedder.defineLibrary("package:$slug/entry.dart"')) {
+        fail('grid shell module names did not canonicalize (no '
+            'package:$slug/entry.dart in the output) — template/SDK mismatch');
+      }
+
+    final outDir = Directory(path.join('artifacts', 'grid_shell'))
+      ..createSync(recursive: true);
+    File(path.join(outDir.path, 'main.dart.js')).writeAsStringSync(js);
+    log('grid shell bundle: ${path.join(outDir.path, 'main.dart.js')} '
+        '(${js.length} bytes, entry=package:$slug/entry.dart)');
+  } finally {
+    temp.deleteSync(recursive: true);
+  }
+}
+
+/// Copies the flutter_project template into [target] and renames the
+/// package to [package] (pubspec + package_config — both must agree).
+void _copyProjectTemplate(Sdk sdk, String target, {required String package}) {
+  final template =
+      path.join(Directory.current.path, 'project_templates', 'flutter_project');
+  Directory(target).createSync(recursive: true);
+  for (final entity in Directory(template).listSync(recursive: true)) {
+    final copyTo =
+        path.join(target, path.relative(entity.path, from: template));
+    if (entity is Directory) {
+      Directory(copyTo).createSync(recursive: true);
+    } else if (entity is File) {
+      entity.copySync(copyTo);
+    } else if (entity is Link) {
+      Link(copyTo).createSync(entity.targetSync(), recursive: true);
+    }
+  }
+  final pubspecFile = File(path.join(target, 'pubspec.yaml'));
+  final pubspec = pubspecFile.readAsStringSync();
+  pubspecFile.writeAsStringSync(
+      pubspec.replaceFirst('name: dartpad_sample', 'name: $package'));
+  final cfgPath = path.join(target, '.dart_tool', 'package_config.json');
+  final cfg = jsonDecode(File(cfgPath).readAsStringSync()) as Map;
+  for (final pkg in (cfg['packages'] as List).cast<Map<String, dynamic>>()) {
+    if (pkg['name'] == 'dartpad_sample') {
+      pkg['name'] = package;
+    }
+  }
+  File(cfgPath).writeAsStringSync(
+      const JsonEncoder.withIndent('  ').convert(cfg));
 }

@@ -102,6 +102,11 @@ class CommonServerApi {
     router.get(r'/compiled/<id>', compileServe.handleServeShell);
     router.get(r'/compiled/<id>/main.dart.js', compileServe.handleServeJs);
 
+    // the fitd one-engine grid shell page (hosts v2 widget fragments in one
+    // engine; bundle = /artifacts/grid_shell/main.dart.js from the
+    // build-grid-shell grind task)
+    router.get(r'/grid/shell', compileServe.handleGridShell);
+
     // general requests (POST)
     router.post(r'/api/<apiVersion>/analyze', handleAnalyze);
     router.post(r'/api/<apiVersion>/compileDDC', handleCompileDDC);

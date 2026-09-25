@@ -13,6 +13,7 @@ analyzer:
     - flutter-sdks/**
     - local_pub_cache/**
     - project_templates/**
+    - tool/grid_shell/**
     - build/**
     - android/**
     - ios/**

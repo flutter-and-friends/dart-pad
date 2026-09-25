@@ -249,8 +249,36 @@ return it in it's entirety. The response should be the same program as the input
 with the error fixed.
 ''';
 
+  // The fitd26 deployment's fragment contract (WI-060): the generated
+  // program is one non-interactive tile inside the one-engine grid shell, so
+  // it must export `Widget fitdApp()` instead of relying on main()/runApp
+  // (which the harness compiles out). Keep this in lockstep with the FITD
+  // OUTPUT FORMAT block in [_appInstructions] (the fix/update path).
   static const String _newFlutterCodeInstructions = '''
-Generate a Flutter program that satisfies the provided description.
+Generate a Flutter program that satisfies the provided description, exposing
+it through this deployment's required fragment contract:
+
+1. Define a top-level function with the EXACT name and signature
+   `Widget fitdApp()` that returns the complete widget tree of the program
+   (what you would otherwise pass as MaterialApp's `home`).
+2. Do NOT define main() and do NOT call runApp — the host harness invokes
+   fitdApp() itself. Reference the root widget as `const` where possible.
+3. Include the MaterialApp (or CupertinoApp) INSIDE fitdApp() when a
+   Material/Cupertino wrapper makes sense; dark themes are preferred.
+4. The program renders as a non-interactive DISPLAY tile at roughly 300x220
+   logical pixels (a larger focused view also exists): scale the UI to fit
+   without overflow (prefer FittedBox/Expanded/Flexible, avoid fixed widths),
+   and never rely on pointer or keyboard input.
+5. Do not touch browser APIs (dart:ui_web, window/document), named
+   routes/navigators, platform views, or URL launching.
+6. Animations are welcome but must be self-contained and frame-cheap: no
+   unbounded timers firing rapid setState; tickers via
+   TickerProviderStateMixin are fine.
+7. ASCII only in code: never use emojis or typographic characters (em dashes,
+   smart quotes) in identifiers, literals, or comments.
+
+Only output the Dart code for the program, wrapped in a Markdown ```dart``` tag. The `fitdApp()` requirement overrides any instinct to write a main()
+entry point.
 ''';
 
   static const String _newDartCodeInstructions = '''
@@ -475,6 +503,31 @@ Interfaces: generated, bespoke, interactive interfaces created on-the-fly using
 the Flutter SDK API. You will produce a professional, release-ready Flutter
 application. All of the instructions below are required to be rigorously
 followed.
+
+FITD OUTPUT FORMAT (this deployment's required fragment contract — these
+rules OVERRIDE the interactive-app instructions below wherever they
+conflict, because the program is displayed as one non-interactive tile
+inside a shared grid shell that hosts many generated programs at once):
+1. The output MUST define a top-level function with the EXACT name and
+   signature `Widget fitdApp()` that returns the complete widget tree of the
+   program (typically the widget you would otherwise pass as MaterialApp's
+   `home`).
+2. Do NOT define `main()` and do NOT call `runApp`. The host harness invokes
+   `fitdApp()` itself; a `main()` in the output is ignored dead code.
+3. The program renders as a non-interactive DISPLAY widget at roughly
+   300x220 logical pixels (a larger focused view also exists). Scale the UI
+   to fit without overflow: prefer FittedBox/Expanded/Flexible, avoid fixed
+   widths, and never rely on pointer or keyboard input.
+4. Do not touch browser APIs (`dart:ui_web`, window/document manipulation),
+   named routes/navigators, platform views, or URL launching.
+5. Animations are welcome but must be self-contained and frame-cheap: no
+   unbounded timers firing rapid setState, no infinite streams; the host
+   demotes tiles that misbehave. Materials, CustomPainter scenes, tweens and
+   AnimatedBuilder patterns are ideal.
+6. ASCII only in code: never use emojis or typographic characters (em dashes,
+   smart quotes) in identifiers, literals, or comments. Keep the program's
+   existing structure and its top-level `Widget fitdApp()` entry (do not add
+   main() or runApp).
 
 Custom user interfaces add capabilities to apps so they can construct
 just-in-time user interfaces that utilize design aesthetics, meaningful
